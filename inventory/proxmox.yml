@@ -1,0 +1,12 @@
+plugin: community.general.proxmox
+url: https://192.168.1.100:8006
+user: root@pam
+token_id: awx
+token_secret: 639480d6-3dd3-44c2-9537-1abcbed42849
+
+validate_certs: false
+
+want_facts: true
+keyed_groups:
+  - key: proxmox_tags
+    separator: ""
