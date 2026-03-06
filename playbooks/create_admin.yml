@@ -1,0 +1,56 @@
+- name: Create admin users and install SSH keys
+  hosts: debian
+  become: true
+
+  vars:
+    admin_groups: ["sudo"]
+
+    admins:
+      - name: enzo
+        pubkey_file: "{{ playbook_dir }}/../files/enzo.pub"
+      - name: killian
+        pubkey_file: "{{ playbook_dir }}/../files/enzo.pub"
+
+  tasks:
+    - name: Ensure sudo is installed
+      ansible.builtin.apt:
+        name: sudo
+        state: present
+        update_cache: true
+
+    - name: Create admin users
+      ansible.builtin.user:
+        name: "{{ item.name }}"
+        groups: "{{ admin_groups }}"
+        append: true
+        shell: /bin/bash
+        create_home: true
+        state: present
+      loop: "{{ admins }}"
+
+    - name: Install authorized SSH key for admin users
+      ansible.posix.authorized_key:
+        user: "{{ item.name }}"
+        key: "{{ lookup('file', item.pubkey_file) }}"
+        state: present
+        manage_dir: true
+      loop: "{{ admins }}"
+
+    - name: Allow passwordless sudo for admin users
+      ansible.builtin.copy:
+        dest: "/etc/sudoers.d/{{ item.name }}"
+        content: "{{ item.name }} ALL=(ALL) NOPASSWD:ALL\n"
+        mode: "0440"
+      loop: "{{ admins }}"
+
+    - name: Install QEMU guest agent
+      ansible.builtin.apt:
+        name: qemu-guest-agent
+        state: present
+        update_cache: true
+
+    - name: Enable and start QEMU guest agent
+      ansible.builtin.service:
+        name: qemu-guest-agent
+        state: started
+        enabled: true
