@@ -1,0 +1,240 @@
+---
+- name: Création d'une VM sur Proxmox via AWX
+  hosts: localhost
+  gather_facts: false
+  vars:
+    proxmox_host: "{{ proxmox_host }}"
+    proxmox_user: "{{ proxmox_user | default('root@pam') }}"
+    proxmox_password: "{{ proxmox_password }}"
+    proxmox_node: "{{ proxmox_node }}"
+
+    vm_name: "{{ vm_name }}"
+    vm_id: "{{ vm_id | int }}"
+    vm_cores: "{{ vm_cores | default(2) | int }}"
+    vm_memory: "{{ vm_memory | default(2048) | int }}"
+    vm_disk_size: "{{ vm_disk_size | default('20G') }}"
+    vm_storage: "{{ vm_storage | default('local-lvm') }}"
+    vm_os_template: "{{ vm_os_template }}"
+    vm_ip: "{{ vm_ip }}"
+    vm_gateway: "{{ vm_gateway }}"
+    vm_netmask: "{{ vm_netmask | default('24') }}"
+    vm_dns: "{{ vm_dns | default('8.8.8.8') }}"
+    vm_vlan: "{{ vm_vlan | default('') }}"
+    vm_description: "{{ vm_description | default('VM créée via AWX') }}"
+    vm_tags: "{{ vm_tags | default('awx') }}"
+    vm_start_at_boot: "{{ vm_start_at_boot | default(true) | bool }}"
+    vm_start_after_create: "{{ vm_start_after_create | default(true) | bool }}"
+    ssh_public_key: "{{ ssh_public_key | default('') }}"
+
+  tasks:
+
+    # ---------------------------------------------------------------
+    # 1. Validation des paramètres
+    # ---------------------------------------------------------------
+    - name: Vérification des paramètres obligatoires
+      ansible.builtin.assert:
+        that:
+          - vm_name is defined and vm_name | length > 0
+          - vm_id is defined and vm_id | int > 0
+          - vm_ip is defined and vm_ip | length > 0
+          - vm_gateway is defined and vm_gateway | length > 0
+          - vm_os_template is defined and vm_os_template | length > 0
+          - proxmox_host is defined and proxmox_host | length > 0
+        fail_msg: "Un ou plusieurs paramètres obligatoires sont manquants."
+        success_msg: "Paramètres validés avec succès."
+
+    - name: Affichage des paramètres de création
+      ansible.builtin.debug:
+        msg:
+          - "==== Création VM Proxmox ===="
+          - "Nom       : {{ vm_name }}"
+          - "VMID      : {{ vm_id }}"
+          - "Noeud     : {{ proxmox_node }}"
+          - "IP        : {{ vm_ip }}/{{ vm_netmask }}"
+          - "Passerelle: {{ vm_gateway }}"
+          - "DNS       : {{ vm_dns }}"
+          - "CPU       : {{ vm_cores }} vCPU"
+          - "RAM       : {{ vm_memory }} MB"
+          - "Disque    : {{ vm_disk_size }}"
+          - "Stockage  : {{ vm_storage }}"
+          - "Template  : {{ vm_os_template }}"
+          - "VLAN      : {{ vm_vlan if vm_vlan else 'Aucun' }}"
+          - "Tags      : {{ vm_tags }}"
+
+    # ---------------------------------------------------------------
+    # 2. Vérification que le VMID n'est pas déjà utilisé
+    # ---------------------------------------------------------------
+    - name: Vérification disponibilité du VMID {{ vm_id }}
+      community.general.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_id }}"
+        state: current
+      register: vm_check
+      failed_when: false
+      changed_when: false
+
+    - name: Arrêt si le VMID est déjà utilisé
+      ansible.builtin.fail:
+        msg: "Le VMID {{ vm_id }} est déjà utilisé par une VM existante !"
+      when: vm_check.status is defined
+
+    # ---------------------------------------------------------------
+    # 3. Clonage du template / création de la VM
+    # ---------------------------------------------------------------
+    - name: Clonage du template {{ vm_os_template }} → {{ vm_name }}
+      community.general.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        newid: "{{ vm_id }}"
+        name: "{{ vm_name }}"
+        clone: "{{ vm_os_template }}"
+        full: true
+        storage: "{{ vm_storage }}"
+        timeout: 300
+        description: "{{ vm_description }}\nCréée via AWX le {{ lookup('pipe', 'date +%Y-%m-%d') }}"
+      register: vm_created
+
+    # ---------------------------------------------------------------
+    # 4. Configuration des ressources
+    # ---------------------------------------------------------------
+    - name: Configuration CPU, RAM, options boot
+      community.general.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_id }}"
+        cores: "{{ vm_cores }}"
+        memory: "{{ vm_memory }}"
+        onboot: "{{ vm_start_at_boot }}"
+        tags: "{{ vm_tags }}"
+        update: true
+
+    # ---------------------------------------------------------------
+    # 5. Redimensionnement du disque
+    # ---------------------------------------------------------------
+    - name: Redimensionnement disque → {{ vm_disk_size }}
+      community.general.proxmox_disk:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        vmid: "{{ vm_id }}"
+        disk: scsi0
+        size: "{{ vm_disk_size }}"
+        state: resized
+      when: vm_disk_size is defined
+
+    # ---------------------------------------------------------------
+    # 6. Configuration réseau via cloud-init
+    # ---------------------------------------------------------------
+    - name: Configuration cloud-init (IP, DNS, clé SSH)
+      community.general.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_id }}"
+        ipconfig:
+          ipconfig0: "ip={{ vm_ip }}/{{ vm_netmask }},gw={{ vm_gateway }}"
+        nameservers: "{{ vm_dns }}"
+        sshkeys: "{{ ssh_public_key }}"
+        cipassword: "{{ vm_ci_password | default(omit) }}"
+        ciuser: "{{ vm_ci_user | default(omit) }}"
+        update: true
+      when: vm_ip != "dhcp"
+
+    - name: Configuration cloud-init (DHCP)
+      community.general.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_id }}"
+        ipconfig:
+          ipconfig0: "ip=dhcp"
+        sshkeys: "{{ ssh_public_key }}"
+        update: true
+      when: vm_ip == "dhcp"
+
+    # ---------------------------------------------------------------
+    # 7. Configuration VLAN (optionnel)
+    # ---------------------------------------------------------------
+    - name: Configuration VLAN {{ vm_vlan }} sur vmbr0
+      community.general.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_id }}"
+        net:
+          net0: "virtio,bridge=vmbr0,tag={{ vm_vlan }}"
+        update: true
+      when: vm_vlan | length > 0
+
+    # ---------------------------------------------------------------
+    # 8. Démarrage de la VM
+    # ---------------------------------------------------------------
+    - name: Démarrage de la VM {{ vm_name }}
+      community.general.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_id }}"
+        state: started
+      when: vm_start_after_create | bool
+
+    # ---------------------------------------------------------------
+    # 9. Attente que la VM soit accessible (ping)
+    # ---------------------------------------------------------------
+    - name: Attente démarrage VM ({{ vm_ip }})
+      ansible.builtin.wait_for:
+        host: "{{ vm_ip }}"
+        port: 22
+        delay: 15
+        timeout: 180
+        state: started
+      when:
+        - vm_start_after_create | bool
+        - vm_ip != "dhcp"
+      register: ssh_wait
+      failed_when: false
+
+    - name: Statut connexion SSH
+      ansible.builtin.debug:
+        msg: "{{ 'SSH accessible sur ' + vm_ip if ssh_wait.state is defined and ssh_wait.state == 'started' else 'SSH non accessible (timeout) - vérifiez la VM manuellement' }}"
+      when:
+        - vm_start_after_create | bool
+        - vm_ip != "dhcp"
+
+    # ---------------------------------------------------------------
+    # 10. Récapitulatif final
+    # ---------------------------------------------------------------
+    - name: Récapitulatif création VM
+      ansible.builtin.debug:
+        msg:
+          - "======================================"
+          - " VM créée avec succès !"
+          - "======================================"
+          - "Nom      : {{ vm_name }}"
+          - "VMID     : {{ vm_id }}"
+          - "Noeud    : {{ proxmox_node }}"
+          - "IP       : {{ vm_ip }}/{{ vm_netmask }}"
+          - "CPU      : {{ vm_cores }} vCPU"
+          - "RAM      : {{ vm_memory }} MB"
+          - "Disque   : {{ vm_disk_size }}"
+          - "URL PVE  : https://{{ proxmox_host }}:8006/#v1:0:18:4:::::::"
+          - "======================================"
