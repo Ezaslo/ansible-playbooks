@@ -21,9 +21,8 @@
     ssh_public_key: "{{ ssh_public_key | default('') }}"
 
   tasks:
-
     # ---------------------------------------------------------------
-    # 1. Clonage et Configuration Initiale
+    # 1. CLONAGE ET CONFIGURATION
     # ---------------------------------------------------------------
     - name: Clonage du template {{ vm_os_template }}
       community.general.proxmox_kvm:
@@ -66,7 +65,7 @@
         state: resized
 
     # ---------------------------------------------------------------
-    # 2. Cycle de déblocage (Fix Kernel Panic & Lock API)
+    # 2. CYCLE DE DEBLOCAGE (Start -> Wait 15s -> Hard Stop API)
     # ---------------------------------------------------------------
     - name: Démarrage initial de la VM
       community.general.proxmox_kvm:
@@ -78,7 +77,7 @@
         vmid: "{{ vm_id }}"
         state: started
 
-    - name: Pause de 5 secondes (Attente boot)
+    - name: Pause de 5 secondes (Attente Boot)
       ansible.builtin.pause:
         seconds: 5
 
@@ -103,7 +102,7 @@
           CSRFPreventionToken: "{{ proxmox_auth.json.data.CSRFPreventionToken }}"
       failed_when: false
 
-    - name: Pause de 5 secondes (Stabilisation)
+    - name: Pause de 5 secondes
       ansible.builtin.pause:
         seconds: 5
 
@@ -125,39 +124,45 @@
         timeout: 300
         state: started
 
-    # ---------------------------------------------------------------
-    # 3. Post-configuration sur la VM Cible
-    # ---------------------------------------------------------------
+    - name: Ajout dynamique à l'inventaire
+      ansible.builtin.add_host:
+        name: "{{ vm_ip }}"
+        groups: nouvelles_vms
+        ansible_user: ansible
+
+# ---------------------------------------------------------------
+# 3. POST-CONFIGURATION (Gestion du verrou APT)
+# ---------------------------------------------------------------
 - name: Post-configuration de la VM
-  hosts: nouvelles_vms  # On cible l'IP qui vient de démarrer
+  hosts: nouvelles_vms
   gather_facts: true
   become: true
-  serial: 1
   tasks:
-
-    - name: Attendre que le lock APT soit libéré
+    - name: Attente de la libération du verrou APT (max 5 min)
       ansible.builtin.shell: |
         while fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/lib/dpkg/lock >/dev/null 2>&1; do
+          echo "Attente de la fin d'une autre instance d'APT..."
           sleep 5
         done
       timeout: 300
 
-    - name: Installation du QEMU Guest Agent
+    - name: Mise à jour du cache APT et installation QEMU Guest Agent
       ansible.builtin.apt:
         name: qemu-guest-agent
         state: present
         update_cache: yes
-      register: apt_res
-      until: apt_res is success
+      register: apt_status
+      until: apt_status is success
       retries: 5
       delay: 10
 
-    - name: Assurer que le service QEMU Agent est lancé
+    - name: Activation du service QEMU Agent
       ansible.builtin.systemd:
         name: qemu-guest-agent
         state: started
         enabled: yes
 
-    - name: Récapitulatif
-      ansible.builtin.debug:
-        msg: "La VM est configurée et l'agent QEMU est installé."
+    - name: Nettoyage final
+      ansible.builtin.apt:
+        autoremove: yes
+        purge: yes
