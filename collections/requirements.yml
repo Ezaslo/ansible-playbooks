@@ -3,3 +3,4 @@ collections:
   - name: community.proxmox
   - name: community.general
     version: ">=8.0.0"
+  - name: ansible.posix
