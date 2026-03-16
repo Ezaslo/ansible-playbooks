@@ -106,7 +106,7 @@
     # ---------------------------------------------------------------
     # 5. Redimensionnement du disque
     # ---------------------------------------------------------------
-   - name: Redimensionnement disque → {{ vm_disk_size }}
+    - name: Redimensionnement disque → {{ vm_disk_size }}
       community.general.proxmox_disk:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
@@ -238,5 +238,3 @@
           - "Disque : {{ vm_disk_size }}"
           - "URL    : https://{{ proxmox_host }}:8006"
           - "======================================"
-
-
