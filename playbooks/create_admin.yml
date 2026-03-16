@@ -1,5 +1,5 @@
 - name: Create admin users and install SSH keys
-  hosts: debian
+  hosts: all
   become: true
 
   vars:
