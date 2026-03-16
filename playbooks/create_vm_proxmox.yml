@@ -106,14 +106,14 @@
     # ---------------------------------------------------------------
     # 5. Redimensionnement du disque
     # ---------------------------------------------------------------
-    - name: Redimensionnement disque → {{ vm_disk_size }}
+   - name: Redimensionnement disque → {{ vm_disk_size }}
       community.general.proxmox_disk:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
         api_password: "{{ proxmox_password }}"
         validate_certs: false
         vmid: "{{ vm_id }}"
-        disk: scsi2
+        disk: scsi0
         size: "{{ vm_disk_size }}"
         state: resized
       when: vm_disk_size is defined
