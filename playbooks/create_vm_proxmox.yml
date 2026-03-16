@@ -1,5 +1,5 @@
 ---
-- name: Création d'une VM sur Proxmox avec Hard Stop forcé
+- name: Création d'une VM Debian
   hosts: localhost
   gather_facts: false
   vars:
@@ -92,7 +92,7 @@
           password: "{{ proxmox_password }}"
       register: proxmox_auth
 
-    - name: Force STOP (Hard Stop / Kill) via API
+    - name: Shutdown
       ansible.builtin.uri:
         url: "https://{{ proxmox_host }}:8006/api2/json/nodes/{{ proxmox_node }}/qemu/{{ vm_id }}/status/stop"
         method: POST
@@ -138,7 +138,7 @@
   gather_facts: true
   become: true
   tasks:
-    - name: Attente de la libération du verrou APT (max 5 min)
+    - name: Attente de la libération du verrou APT
       ansible.builtin.shell: |
         while fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/lib/dpkg/lock >/dev/null 2>&1; do
           echo "Attente de la fin d'une autre instance d'APT..."
