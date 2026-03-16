@@ -27,13 +27,10 @@
 
   tasks:
 
-    # [ Les étapes 1 à 7 restent identiques ]
-
     # ---------------------------------------------------------------
-    # 8. Cycle STOP FORCÉ et START
+    # 1. Validation & Vérification
     # ---------------------------------------------------------------
-    
-    - name: Action STOP FORCÉ (Hard Stop immédiat)
+    - name: Vérification disponibilité du VMID {{ vm_id }}
       community.general.proxmox_kvm:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
@@ -41,17 +38,67 @@
         validate_certs: false
         node: "{{ proxmox_node }}"
         vmid: "{{ vm_id }}"
-        state: stopped
-        timeout: 0  # Force l'arrêt immédiat (Kill du processus VM)
-      register: stop_result
-      when: vm_start_after_create | bool
+        state: current
+      register: vm_check
+      failed_when: false
 
-    - name: Pause de sécurité pour laisser Proxmox rafraîchir l'état
-      ansible.builtin.pause:
-        seconds: 5
-      when: vm_start_after_create | bool
+    - name: Arrêt si le VMID est déjà utilisé
+      ansible.builtin.fail:
+        msg: "Le VMID {{ vm_id }} est déjà utilisé !"
+      when: vm_check.status is defined
 
-    - name: Action START (Démarrage propre après arrêt forcé)
+    # ---------------------------------------------------------------
+    # 2. Création (Clone)
+    # ---------------------------------------------------------------
+    - name: Clonage du template {{ vm_os_template }}
+      community.general.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        newid: "{{ vm_id }}"
+        name: "{{ vm_name }}"
+        clone: "{{ vm_os_template }}"
+        full: true
+        storage: "{{ vm_storage }}"
+        timeout: 300
+
+    # ---------------------------------------------------------------
+    # 3. Configuration (Hardware & Cloud-Init)
+    # ---------------------------------------------------------------
+    - name: Configuration CPU, RAM et Réseau
+      community.general.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_id }}"
+        cores: "{{ vm_cores }}"
+        memory: "{{ vm_memory }}"
+        ipconfig:
+          ipconfig0: "ip={{ vm_ip }}/{{ vm_netmask }},gw={{ vm_gateway }}"
+        nameservers: "{{ vm_dns }}"
+        sshkeys: "{{ ssh_public_key }}"
+        update: true
+
+    - name: Redimensionnement disque
+      community.general.proxmox_disk:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        vmid: "{{ vm_id }}"
+        disk: scsi0
+        size: "{{ vm_disk_size }}"
+        state: resized
+
+    # ---------------------------------------------------------------
+    # 4. Cycle de Vie : Start -> Stop Forcé -> Start Final
+    # ---------------------------------------------------------------
+    
+    - name: "Étape 1 : Démarrage initial (pour charger la config)"
       community.general.proxmox_kvm:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
@@ -62,4 +109,54 @@
         state: started
       when: vm_start_after_create | bool
 
-    # [ Les étapes 9 à 11 restent identiques ]
+    - name: "Étape 2 : Arrêt FORCÉ (Hard Stop)"
+      community.general.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_id }}"
+        state: stopped
+        timeout: 0  # 0 force le kill immédiat de la VM
+      when: vm_start_after_create | bool
+
+    - name: Pause de synchronisation API (5s)
+      ansible.builtin.pause:
+        seconds: 5
+      when: vm_start_after_create | bool
+
+    - name: "Étape 3 : Démarrage Final"
+      community.general.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_id }}"
+        state: started
+      when: vm_start_after_create | bool
+
+    # ---------------------------------------------------------------
+    # 5. Post-Déploiement
+    # ---------------------------------------------------------------
+    - name: Attente accès SSH ({{ vm_ip }})
+      ansible.builtin.wait_for:
+        host: "{{ vm_ip }}"
+        port: 22
+        delay: 10
+        timeout: 300
+        state: started
+      when: vm_start_after_create | bool
+      register: ssh_wait
+
+    - name: Ajout à l'inventaire AWX
+      ansible.builtin.add_host:
+        name: "{{ vm_ip }}"
+        groups: nouvelles_vms
+        ansible_user: ansible
+      when: ssh_wait is succeeded
+
+    - name: Récapitulatif final
+      ansible.builtin.debug:
+        msg: "La VM {{ vm_name }} (ID: {{ vm_id }}) est prête sur {{ vm_ip }} après un Hard Reset."
