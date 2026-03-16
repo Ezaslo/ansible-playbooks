@@ -23,9 +23,9 @@
   tasks:
 
     # ---------------------------------------------------------------
-    # 1. Création & Configuration initiale
+    # 1. Préparation et Clonage
     # ---------------------------------------------------------------
-    - name: Clonage du template
+    - name: Clonage du template {{ vm_os_template }}
       community.general.proxmox_kvm:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
@@ -66,10 +66,24 @@
         state: resized
 
     # ---------------------------------------------------------------
-    # 2. Gestion du Kernel Panic : Arrêt Brutal via API (Force Stop)
+    # 2. Cycle de déblocage (Start -> Attente -> Hard Stop)
     # ---------------------------------------------------------------
 
-    - name: Authentification à l'API Proxmox pour obtenir un ticket
+    - name: Démarrage initial de la VM
+      community.general.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_user: "{{ proxmox_user }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_id }}"
+        state: started
+
+    - name: Pause de 15 secondes (Attente boot/Kernel Panic)
+      ansible.builtin.pause:
+        seconds: 15
+
+    - name: Authentification API Proxmox
       ansible.builtin.uri:
         url: "https://{{ proxmox_host }}:8006/api2/json/access/ticket"
         method: POST
@@ -82,24 +96,24 @@
 
     - name: Force STOP (Hard Stop / Kill) via API
       ansible.builtin.uri:
-        url: "https://{{ proxmox_host }}:8006/api2/json/nodes/{{ proxmox_node }}/qemu/{{ vm_id }}/status/stop"
+        url: "https://{{ proxmox_host:8006 }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ vm_id }}/status/stop"
         method: POST
         validate_certs: false
         headers:
           Cookie: "PVEAuthCookie={{ proxmox_auth.json.data.ticket }}"
           CSRFPreventionToken: "{{ proxmox_auth.json.data.CSRFPreventionToken }}"
-      register: stop_status
-      failed_when: false # On ignore si elle est déjà stoppée
+      register: stop_api
+      failed_when: false
 
-    - name: Pause pour laisser Proxmox tuer le processus VM
+    - name: Pause de 5 secondes (Stabilisation API)
       ansible.builtin.pause:
-        seconds: 10
+        seconds: 5
 
     # ---------------------------------------------------------------
-    # 3. Démarrage final
+    # 3. Démarrage Final et Validation
     # ---------------------------------------------------------------
 
-    - name: Démarrage propre de la VM
+    - name: Démarrage final après Hard Reset
       community.general.proxmox_kvm:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
@@ -109,10 +123,22 @@
         vmid: "{{ vm_id }}"
         state: started
 
-    - name: Attente accès SSH
+    - name: Attente accès SSH ({{ vm_ip }})
       ansible.builtin.wait_for:
         host: "{{ vm_ip }}"
         port: 22
         delay: 15
         timeout: 300
         state: started
+      register: ssh_wait
+
+    - name: Ajout à l'inventaire en mémoire
+      ansible.builtin.add_host:
+        name: "{{ vm_ip }}"
+        groups: nouvelles_vms
+        ansible_user: ansible
+      when: ssh_wait is succeeded
+
+    - name: Récapitulatif
+      ansible.builtin.debug:
+        msg: "VM {{ vm_name }} déployée avec succès après un Hard Stop forcé."
