@@ -23,7 +23,7 @@
   tasks:
 
     # ---------------------------------------------------------------
-    # 1. Clonage et Configuration
+    # 1. Clonage et Configuration Initiale
     # ---------------------------------------------------------------
     - name: Clonage du template {{ vm_os_template }}
       community.general.proxmox_kvm:
@@ -66,9 +66,8 @@
         state: resized
 
     # ---------------------------------------------------------------
-    # 2. Cycle de déblocage : Start -> Attente 15s -> Hard Stop
+    # 2. Cycle de déblocage (Fix Kernel Panic & Lock API)
     # ---------------------------------------------------------------
-
     - name: Démarrage initial de la VM
       community.general.proxmox_kvm:
         api_host: "{{ proxmox_host }}"
@@ -79,11 +78,11 @@
         vmid: "{{ vm_id }}"
         state: started
 
-    - name: Pause de 15 secondes (Attente boot avant de forcer l'arrêt)
+    - name: Pause de 15 secondes (Attente boot)
       ansible.builtin.pause:
         seconds: 15
 
-    - name: Authentification API Proxmox (Récupération Ticket)
+    - name: Authentification API Proxmox
       ansible.builtin.uri:
         url: "https://{{ proxmox_host }}:8006/api2/json/access/ticket"
         method: POST
@@ -94,7 +93,7 @@
           password: "{{ proxmox_password }}"
       register: proxmox_auth
 
-    - name: Force STOP (Hard Stop / Kill) via API Proxmox
+    - name: Force STOP (Hard Stop / Kill) via API
       ansible.builtin.uri:
         url: "https://{{ proxmox_host }}:8006/api2/json/nodes/{{ proxmox_node }}/qemu/{{ vm_id }}/status/stop"
         method: POST
@@ -102,18 +101,13 @@
         headers:
           Cookie: "PVEAuthCookie={{ proxmox_auth.json.data.ticket }}"
           CSRFPreventionToken: "{{ proxmox_auth.json.data.CSRFPreventionToken }}"
-      register: stop_api
-      failed_when: false # Évite de planter si la VM s'est déjà arrêtée seule
+      failed_when: false
 
-    - name: Pause de 5 secondes pour stabilisation
+    - name: Pause de 5 secondes (Stabilisation)
       ansible.builtin.pause:
         seconds: 5
 
-    # ---------------------------------------------------------------
-    # 3. Démarrage Final et Validation
-    # ---------------------------------------------------------------
-
-    - name: Démarrage final de la VM
+    - name: Démarrage final
       community.general.proxmox_kvm:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
@@ -130,15 +124,40 @@
         delay: 15
         timeout: 300
         state: started
-      register: ssh_wait
 
-    - name: Ajout à l'inventaire dynamique
-      ansible.builtin.add_host:
-        name: "{{ vm_ip }}"
-        groups: nouvelles_vms
-        ansible_user: ansible
-      when: ssh_wait is succeeded
+    # ---------------------------------------------------------------
+    # 3. Post-configuration sur la VM Cible
+    # ---------------------------------------------------------------
+- name: Post-configuration de la VM
+  hosts: nouvelles_vms  # On cible l'IP qui vient de démarrer
+  gather_facts: true
+  become: true
+  serial: 1
+  tasks:
+
+    - name: Attendre que le lock APT soit libéré
+      ansible.builtin.shell: |
+        while fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/lib/dpkg/lock >/dev/null 2>&1; do
+          sleep 5
+        done
+      timeout: 300
+
+    - name: Installation du QEMU Guest Agent
+      ansible.builtin.apt:
+        name: qemu-guest-agent
+        state: present
+        update_cache: yes
+      register: apt_res
+      until: apt_res is success
+      retries: 5
+      delay: 10
+
+    - name: Assurer que le service QEMU Agent est lancé
+      ansible.builtin.systemd:
+        name: qemu-guest-agent
+        state: started
+        enabled: yes
 
     - name: Récapitulatif
       ansible.builtin.debug:
-        msg: "Succès : VM {{ vm_name }} opérationnelle après cycle Hard-Stop API."
+        msg: "La VM est configurée et l'agent QEMU est installé."
