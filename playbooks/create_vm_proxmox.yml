@@ -42,12 +42,8 @@
         fail_msg: "Un ou plusieurs paramètres obligatoires sont manquants."
         success_msg: "Paramètres validés avec succès."
 
-    - name: Affichage des paramètres de création
-      ansible.builtin.debug:
-        msg: "Création de la VM {{ vm_name }} (VMID {{ vm_id }}) sur le noeud {{ proxmox_node }} avec IP {{ vm_ip }}"
-
     # ---------------------------------------------------------------
-    # 2. Vérification que le VMID n'est pas déjà utilisé
+    # 2. Vérification de la disponibilité du VMID
     # ---------------------------------------------------------------
     - name: Vérification disponibilité du VMID {{ vm_id }}
       community.general.proxmox_kvm:
@@ -84,7 +80,6 @@
         storage: "{{ vm_storage }}"
         timeout: 300
         description: "{{ vm_description }}\nCréée via AWX le {{ lookup('pipe', 'date +%Y-%m-%d') }}"
-      register: vm_created
 
     # ---------------------------------------------------------------
     # 4. Configuration CPU / RAM / boot
@@ -121,7 +116,7 @@
     # ---------------------------------------------------------------
     # 6. Configuration réseau via cloud-init
     # ---------------------------------------------------------------
-    - name: Configuration cloud-init — IP statique
+    - name: Configuration cloud-init
       community.general.proxmox_kvm:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
@@ -130,32 +125,15 @@
         node: "{{ proxmox_node }}"
         vmid: "{{ vm_id }}"
         ipconfig:
-          ipconfig0: "ip={{ vm_ip }}/{{ vm_netmask }},gw={{ vm_gateway }}"
-        nameservers: "{{ vm_dns }}"
-        sshkeys: "{{ ssh_public_key }}"
-        cipassword: "{{ vm_ci_password | default(omit) }}"
-        ciuser: "{{ vm_ci_user | default(omit) }}"
-        update: true
-      when: vm_ip != "dhcp"
-
-    - name: Configuration cloud-init — DHCP
-      community.general.proxmox_kvm:
-        api_host: "{{ proxmox_host }}"
-        api_user: "{{ proxmox_user }}"
-        api_password: "{{ proxmox_password }}"
-        validate_certs: false
-        node: "{{ proxmox_node }}"
-        vmid: "{{ vm_id }}"
-        ipconfig:
-          ipconfig0: "ip=dhcp"
+          ipconfig0: "{{ 'ip=dhcp' if vm_ip == 'dhcp' else 'ip=' + vm_ip + '/' + (vm_netmask | string) + ',gw=' + vm_gateway }}"
+        nameservers: "{{ vm_dns if vm_ip != 'dhcp' else omit }}"
         sshkeys: "{{ ssh_public_key }}"
         update: true
-      when: vm_ip == "dhcp"
 
     # ---------------------------------------------------------------
     # 7. Configuration VLAN (optionnel)
     # ---------------------------------------------------------------
-    - name: Configuration VLAN {{ vm_vlan }} sur vmbr0
+    - name: Configuration VLAN {{ vm_vlan }}
       community.general.proxmox_kvm:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
@@ -164,14 +142,14 @@
         node: "{{ proxmox_node }}"
         vmid: "{{ vm_id }}"
         net:
-          net0: "virtio,bridge=vmbr0,tag={{ vm_vlan if vm_vlan | length > 0 else omit }}"
+          net0: "virtio,bridge=vmbr0,tag={{ vm_vlan }}"
         update: true
       when: vm_vlan | length > 0
 
     # ---------------------------------------------------------------
-    # 8. Cycle de redémarrage (Shutdown & Start)
+    # 8. Cycle SHUTDOWN et START
     # ---------------------------------------------------------------
-    - name: Arrêt de la VM (Shutdown) pour appliquer la configuration
+    - name: Action SHUTDOWN (Extinction de la VM)
       community.general.proxmox_kvm:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
@@ -183,7 +161,7 @@
         timeout: 90
       when: vm_start_after_create | bool
 
-    - name: Démarrage de la VM (Reboot effectif)
+    - name: Action START (Démarrage de la VM)
       community.general.proxmox_kvm:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
@@ -210,16 +188,6 @@
       register: ssh_wait
       failed_when: false
 
-    - name: Statut connexion SSH
-      ansible.builtin.debug:
-        msg: >-
-          {{ 'SSH accessible sur ' + vm_ip
-          if ssh_wait.state is defined and ssh_wait.state == 'started'
-          else 'SSH non accessible (timeout) - vérifiez la VM manuellement' }}
-      when:
-        - vm_start_after_create | bool
-        - vm_ip != "dhcp"
-
     # ---------------------------------------------------------------
     # 10. Ajout dynamique à l'inventaire
     # ---------------------------------------------------------------
@@ -236,19 +204,14 @@
     # ---------------------------------------------------------------
     # 11. Récapitulatif
     # ---------------------------------------------------------------
-    - name: Récapitulatif création VM
+    - name: Récapitulatif
       ansible.builtin.debug:
         msg:
           - "======================================"
-          - " VM créée et redémarrée avec succès !"
+          - " VM créée, éteinte puis redémarrée !"
           - "======================================"
           - "Nom    : {{ vm_name }}"
           - "VMID   : {{ vm_id }}"
-          - "Noeud  : {{ proxmox_node }}"
-          - "IP     : {{ vm_ip }}/{{ vm_netmask }}"
-          - "CPU    : {{ vm_cores }} vCPU"
-          - "RAM    : {{ vm_memory }} MB"
-          - "Disque : {{ vm_disk_size }}"
-          - "Statut : Cycle Reboot Terminé"
-          - "URL    : https://{{ proxmox_host }}:8006"
+          - "IP     : {{ vm_ip }}"
+          - "Statut : Cycle Shutdown/Start OK"
           - "======================================"
