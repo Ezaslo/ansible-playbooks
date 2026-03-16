@@ -40,23 +40,9 @@
         fail_msg: "Un ou plusieurs paramètres obligatoires sont manquants."
         success_msg: "Paramètres validés avec succès."
 
-    - name: Affichage des paramètres de création
+    - - name: Affichage des paramètres de création
       ansible.builtin.debug:
-        msg:
-          - "==== Création VM Proxmox ===="
-          - "Nom       : {{ vm_name }}"
-          - "VMID      : {{ vm_id }}"
-          - "Noeud     : {{ proxmox_node }}"
-          - "IP        : {{ vm_ip }}/{{ vm_netmask }}"
-          - "Passerelle: {{ vm_gateway }}"
-          - "DNS       : {{ vm_dns }}"
-          - "CPU       : {{ vm_cores }} vCPU"
-          - "RAM       : {{ vm_memory }} MB"
-          - "Disque    : {{ vm_disk_size }}"
-          - "Stockage  : {{ vm_storage }}"
-          - "Template  : {{ vm_os_template }}"
-          - "VLAN      : {{ vm_vlan if vm_vlan else 'Aucun' }}"
-          - "Tags      : {{ vm_tags }}"
+        msg: "Création de la VM {{ vm_name }} (VMID {{ vm_id }}) sur le noeud {{ proxmox_node }} avec IP {{ vm_ip }}"
 
     # ---------------------------------------------------------------
     # 2. Vérification que le VMID n'est pas déjà utilisé
