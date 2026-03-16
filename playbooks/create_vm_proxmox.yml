@@ -68,7 +68,7 @@
       when: vm_check.status is defined
 
     # ---------------------------------------------------------------
-    # 3. Clonage du template / création de la VM
+    # 3. Clonage du template
     # ---------------------------------------------------------------
     - name: Clonage du template {{ vm_os_template }} → {{ vm_name }}
       community.general.proxmox_kvm:
@@ -87,7 +87,7 @@
       register: vm_created
 
     # ---------------------------------------------------------------
-    # 4. Configuration des ressources
+    # 4. Configuration CPU / RAM / boot
     # ---------------------------------------------------------------
     - name: Configuration CPU, RAM, options boot
       community.general.proxmox_kvm:
@@ -121,7 +121,7 @@
     # ---------------------------------------------------------------
     # 6. Configuration réseau via cloud-init
     # ---------------------------------------------------------------
-    - name: Configuration cloud-init (IP, DNS, clé SSH)
+    - name: Configuration cloud-init — IP statique
       community.general.proxmox_kvm:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
@@ -138,7 +138,7 @@
         update: true
       when: vm_ip != "dhcp"
 
-    - name: Configuration cloud-init (DHCP)
+    - name: Configuration cloud-init — DHCP
       community.general.proxmox_kvm:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
@@ -183,7 +183,7 @@
       when: vm_start_after_create | bool
 
     # ---------------------------------------------------------------
-    # 9. Attente que la VM soit accessible (ping)
+    # 9. Attente SSH
     # ---------------------------------------------------------------
     - name: Attente démarrage VM ({{ vm_ip }})
       ansible.builtin.wait_for:
@@ -200,13 +200,16 @@
 
     - name: Statut connexion SSH
       ansible.builtin.debug:
-        msg: "{{ 'SSH accessible sur ' + vm_ip if ssh_wait.state is defined and ssh_wait.state == 'started' else 'SSH non accessible (timeout) - vérifiez la VM manuellement' }}"
+        msg: >-
+          {{ 'SSH accessible sur ' + vm_ip
+          if ssh_wait.state is defined and ssh_wait.state == 'started'
+          else 'SSH non accessible (timeout) - vérifiez la VM manuellement' }}
       when:
         - vm_start_after_create | bool
         - vm_ip != "dhcp"
 
     # ---------------------------------------------------------------
-    # 10. Récapitulatif final
+    # 10. Récapitulatif
     # ---------------------------------------------------------------
     - name: Récapitulatif création VM
       ansible.builtin.debug:
@@ -214,23 +217,27 @@
           - "======================================"
           - " VM créée avec succès !"
           - "======================================"
-          - "Nom      : {{ vm_name }}"
-          - "VMID     : {{ vm_id }}"
-          - "Noeud    : {{ proxmox_node }}"
-          - "IP       : {{ vm_ip }}/{{ vm_netmask }}"
-          - "CPU      : {{ vm_cores }} vCPU"
-          - "RAM      : {{ vm_memory }} MB"
-          - "Disque   : {{ vm_disk_size }}"
-          - "URL PVE  : https://{{ proxmox_host }}:8006/#v1:0:18:4:::::::"
+          - "Nom    : {{ vm_name }}"
+          - "VMID   : {{ vm_id }}"
+          - "Noeud  : {{ proxmox_node }}"
+          - "IP     : {{ vm_ip }}/{{ vm_netmask }}"
+          - "CPU    : {{ vm_cores }} vCPU"
+          - "RAM    : {{ vm_memory }} MB"
+          - "Disque : {{ vm_disk_size }}"
+          - "URL    : https://{{ proxmox_host }}:8006"
           - "======================================"
 
 
+# ===================================================================
+# PLAY 2 — Configuration admin sur la nouvelle VM
+# ===================================================================
 - name: Configuration admin sur la nouvelle VM
   hosts: "{{ vm_ip }}"
   become: true
   gather_facts: false
   vars:
-    admin_groups: ["sudo"]
+    admin_groups:
+      - sudo
     admins:
       - name: enzo
         pubkey_file: "{{ playbook_dir }}/../files/enzo.pub"
@@ -244,13 +251,13 @@
         timeout: 180
 
   tasks:
-    - name: Ensure sudo is installed
+    - name: Installation de sudo
       ansible.builtin.apt:
         name: sudo
         state: present
         update_cache: true
 
-    - name: Create admin users
+    - name: Création des utilisateurs admin
       ansible.builtin.user:
         name: "{{ item.name }}"
         groups: "{{ admin_groups }}"
@@ -260,7 +267,7 @@
         state: present
       loop: "{{ admins }}"
 
-    - name: Install authorized SSH key for admin users
+    - name: Déploiement des clés SSH autorisées
       ansible.posix.authorized_key:
         user: "{{ item.name }}"
         key: "{{ lookup('file', item.pubkey_file) }}"
