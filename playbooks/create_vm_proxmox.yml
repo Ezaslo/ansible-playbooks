@@ -223,3 +223,46 @@
           - "Disque   : {{ vm_disk_size }}"
           - "URL PVE  : https://{{ proxmox_host }}:8006/#v1:0:18:4:::::::"
           - "======================================"
+
+
+- name: Configuration admin sur la nouvelle VM
+  hosts: "{{ vm_ip }}"
+  become: true
+  gather_facts: false
+  vars:
+    admin_groups: ["sudo"]
+    admins:
+      - name: enzo
+        pubkey_file: "{{ playbook_dir }}/../files/enzo.pub"
+      - name: killian
+        pubkey_file: "{{ playbook_dir }}/../files/enzo.pub"
+
+  pre_tasks:
+    - name: Attente SSH disponible
+      ansible.builtin.wait_for_connection:
+        delay: 10
+        timeout: 180
+
+  tasks:
+    - name: Ensure sudo is installed
+      ansible.builtin.apt:
+        name: sudo
+        state: present
+        update_cache: true
+
+    - name: Create admin users
+      ansible.builtin.user:
+        name: "{{ item.name }}"
+        groups: "{{ admin_groups }}"
+        append: true
+        shell: /bin/bash
+        create_home: true
+        state: present
+      loop: "{{ admins }}"
+
+    - name: Install authorized SSH key for admin users
+      ansible.posix.authorized_key:
+        user: "{{ item.name }}"
+        key: "{{ lookup('file', item.pubkey_file) }}"
+        state: present
+      loop: "{{ admins }}"
