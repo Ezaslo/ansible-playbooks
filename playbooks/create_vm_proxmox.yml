@@ -216,7 +216,6 @@
         name: "{{ vm_ip }}"
         groups: nouvelles_vms
         ansible_user: ansible
-        ansible_ssh_private_key_file: ~/.ssh/ansible_ed25519
       when:
         - vm_start_after_create | bool
         - vm_ip != "dhcp"
