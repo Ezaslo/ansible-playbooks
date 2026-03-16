@@ -147,9 +147,9 @@
       when: vm_vlan | length > 0
 
     # ---------------------------------------------------------------
-    # 8. Cycle SHUTDOWN et START
+    # 8. Cycle STOP FORCÉ et START
     # ---------------------------------------------------------------
-    - name: Action SHUTDOWN (Extinction de la VM)
+    - name: Arrêt FORCÉ de la VM (Stop immédiat)
       community.general.proxmox_kvm:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
@@ -158,10 +158,10 @@
         node: "{{ proxmox_node }}"
         vmid: "{{ vm_id }}"
         state: stopped
-        timeout: 90
+        timeout: 0  # Timeout à 0 force l'arrêt immédiat (hard stop)
       when: vm_start_after_create | bool
 
-    - name: Action START (Démarrage de la VM)
+    - name: Démarrage de la VM après arrêt forcé
       community.general.proxmox_kvm:
         api_host: "{{ proxmox_host }}"
         api_user: "{{ proxmox_user }}"
@@ -208,10 +208,10 @@
       ansible.builtin.debug:
         msg:
           - "======================================"
-          - " VM créée, éteinte puis redémarrée !"
+          - " VM créée, STOP FORCÉ effectué et redémarrée !"
           - "======================================"
           - "Nom    : {{ vm_name }}"
           - "VMID   : {{ vm_id }}"
           - "IP     : {{ vm_ip }}"
-          - "Statut : Cycle Shutdown/Start OK"
+          - "Statut : Cycle Hard-Stop/Start OK"
           - "======================================"
