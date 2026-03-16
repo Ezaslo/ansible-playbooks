@@ -209,7 +209,20 @@
         - vm_ip != "dhcp"
 
     # ---------------------------------------------------------------
-    # 10. Récapitulatif
+    # 10. Ajout dynamique de la VM à l'inventaire en mémoire
+    # ---------------------------------------------------------------
+    - name: Ajout de la VM à l'inventaire en mémoire
+      ansible.builtin.add_host:
+        name: "{{ vm_ip }}"
+        groups: nouvelles_vms
+        ansible_user: ansible
+        ansible_ssh_private_key_file: ~/.ssh/ansible_ed25519
+      when:
+        - vm_start_after_create | bool
+        - vm_ip != "dhcp"
+
+    # ---------------------------------------------------------------
+    # 11. Récapitulatif
     # ---------------------------------------------------------------
     - name: Récapitulatif création VM
       ansible.builtin.debug:
@@ -232,7 +245,7 @@
 # PLAY 2 — Configuration admin sur la nouvelle VM
 # ===================================================================
 - name: Configuration admin sur la nouvelle VM
-  hosts: "{{ vm_ip }}"
+  hosts: nouvelles_vms
   become: true
   gather_facts: false
   vars:
