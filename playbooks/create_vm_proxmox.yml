@@ -78,9 +78,9 @@
         vmid: "{{ vm_id }}"
         state: started
 
-    - name: Pause de 15 secondes (Attente boot)
+    - name: Pause de 5 secondes (Attente boot)
       ansible.builtin.pause:
-        seconds: 15
+        seconds: 5
 
     - name: Authentification API Proxmox
       ansible.builtin.uri:
