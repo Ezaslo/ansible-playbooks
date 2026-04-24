@@ -83,7 +83,7 @@
 
     - name: Authentification API Proxmox
       ansible.builtin.uri:
-        url: "https://{{ proxmox_host }}:443/api2/json/access/ticket"
+        url: "https://{{ proxmox_host }}/api2/json/access/ticket"
         method: POST
         validate_certs: false
         body_format: form-urlencoded
@@ -94,7 +94,7 @@
 
     - name: Shutdown
       ansible.builtin.uri:
-        url: "https://{{ proxmox_host }}:443/api2/json/nodes/{{ proxmox_node }}/qemu/{{ vm_id }}/status/stop"
+        url: "https://{{ proxmox_host }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ vm_id }}/status/stop"
         method: POST
         validate_certs: false
         headers:
