@@ -2,121 +2,178 @@
 - name: Création d'une VM Debian
   hosts: localhost
   gather_facts: false
-  vars:
-    proxmox_host: "{{ proxmox_host }}"
-    proxmox_user: "{{ proxmox_user | default('root@pam') }}"
-    proxmox_password: "{{ proxmox_password }}"
-    proxmox_node: "{{ proxmox_node }}"
-    vm_name: "{{ vm_name }}"
-    vm_id: "{{ vm_id | int }}"
-    vm_cores: "{{ vm_cores | default(2) | int }}"
-    vm_memory: "{{ vm_memory | default(2048) | int }}"
-    vm_disk_size: "{{ vm_disk_size | default('20G') }}"
-    vm_storage: "{{ vm_storage | default('local-lvm') }}"
-    vm_os_template: "{{ vm_os_template }}"
-    vm_ip: "{{ vm_ip }}"
-    vm_gateway: "{{ vm_gateway }}"
-    vm_netmask: "{{ vm_netmask | default(24) }}"
-    vm_dns: "8.8.8.8"
-    ssh_public_key: "{{ ssh_public_key | default('') }}"
 
   tasks:
-    # ---------------------------------------------------------------
-    # 1. CLONAGE ET CONFIGURATION
-    # ---------------------------------------------------------------
-    - name: Clonage du template {{ vm_os_template }}
-      community.general.proxmox_kvm:
-        api_host: "{{ proxmox_host }}"
-        api_user: "{{ proxmox_user }}"
-        api_password: "{{ proxmox_password }}"
-        validate_certs: false
-        node: "{{ proxmox_node }}"
-        newid: "{{ vm_id }}"
-        name: "{{ vm_name }}"
-        clone: "{{ vm_os_template }}"
-        full: true
-        storage: "{{ vm_storage }}"
-        timeout: 300
-
-    - name: Configuration Hardware et Cloud-Init
-      community.general.proxmox_kvm:
-        api_host: "{{ proxmox_host }}"
-        api_user: "{{ proxmox_user }}"
-        api_password: "{{ proxmox_password }}"
-        validate_certs: false
-        node: "{{ proxmox_node }}"
-        vmid: "{{ vm_id }}"
-        cores: "{{ vm_cores }}"
-        memory: "{{ vm_memory }}"
-        ipconfig:
-          ipconfig0: "ip={{ vm_ip }}/{{ vm_netmask }},gw={{ vm_gateway }}"
-        sshkeys: "{{ ssh_public_key }}"
-        update: true
-
-    - name: Redimensionnement disque
-      community.general.proxmox_disk:
-        api_host: "{{ proxmox_host }}"
-        api_user: "{{ proxmox_user }}"
-        api_password: "{{ proxmox_password }}"
-        validate_certs: false
-        vmid: "{{ vm_id }}"
-        disk: scsi0
-        size: "{{ vm_disk_size }}"
-        state: resized
-
-    # ---------------------------------------------------------------
-    # 2. CYCLE DE DEBLOCAGE (Start -> Wait 15s -> Hard Stop API)
-    # ---------------------------------------------------------------
-    - name: Démarrage initial de la VM
-      community.general.proxmox_kvm:
-        api_host: "{{ proxmox_host }}"
-        api_user: "{{ proxmox_user }}"
-        api_password: "{{ proxmox_password }}"
-        validate_certs: false
-        node: "{{ proxmox_node }}"
-        vmid: "{{ vm_id }}"
-        state: started
-
-    - name: Pause de 5 secondes (Attente Boot)
-      ansible.builtin.pause:
-        seconds: 5
-
     - name: Authentification API Proxmox
       ansible.builtin.uri:
-        url: "https://{{ proxmox_host }}/api2/json/access/ticket"
+        url: "https://{{ proxmox_host }}:{{ proxmox_port | default(8006) }}/api2/json/access/ticket"
         method: POST
         validate_certs: false
         body_format: form-urlencoded
         body:
-          username: "{{ proxmox_user }}"
+          username: "{{ proxmox_user | default('root@pam') }}"
           password: "{{ proxmox_password }}"
       register: proxmox_auth
+      no_log: true
 
-    - name: Shutdown
+    - name: Vérification absence VM existante avec ce VMID
       ansible.builtin.uri:
-        url: "https://{{ proxmox_host }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ vm_id }}/status/stop"
+        url: "https://{{ proxmox_host }}:{{ proxmox_port | default(8006) }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ vm_id | int }}/config"
+        method: GET
+        validate_certs: false
+        headers:
+          Cookie: "PVEAuthCookie={{ proxmox_auth.json.data.ticket }}"
+        status_code: [200, 404, 500]
+      register: existing_vm_check
+      failed_when: false
+      changed_when: false
+      no_log: true
+
+    - name: Stopper si le VMID existe déjà
+      ansible.builtin.fail:
+        msg: "La VM {{ vm_id }} existe déjà sur le node {{ proxmox_node }}. Création annulée pour éviter d'écraser une VM existante."
+      when: existing_vm_check.status == 200
+
+    - name: Vérification des volumes orphelins sur le storage cible
+      ansible.builtin.uri:
+        url: "https://{{ proxmox_host }}:{{ proxmox_port | default(8006) }}/api2/json/nodes/{{ proxmox_node }}/storage/{{ vm_storage | default('local-lvm') }}/content?content=images"
+        method: GET
+        validate_certs: false
+        headers:
+          Cookie: "PVEAuthCookie={{ proxmox_auth.json.data.ticket }}"
+        status_code: 200
+      register: storage_content
+      changed_when: false
+      no_log: true
+
+    - name: Construire la liste des volumes orphelins du VMID
+      ansible.builtin.set_fact:
+        orphan_volumes: >-
+          {{
+            storage_content.json.data
+            | default([])
+            | selectattr('volid', 'search', '(^|:)vm-' ~ (vm_id | string) ~ '-')
+            | map(attribute='volid')
+            | list
+          }}
+
+    - name: Stopper si des volumes orphelins existent pour ce VMID
+      ansible.builtin.fail:
+        msg: "Le VMID {{ vm_id }} n'est pas propre. Volumes orphelins trouvés : {{ orphan_volumes }}. Nettoyage manuel requis avant création."
+      when: orphan_volumes | length > 0
+
+    - name: Clonage du template {{ vm_os_template }}
+      community.proxmox.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_port: "{{ proxmox_port | default(8006) | int }}"
+        api_user: "{{ proxmox_user | default('root@pam') }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ template_vmid | default(10000) | int }}"
+        newid: "{{ vm_id | int }}"
+        name: "{{ vm_name }}"
+        clone: "{{ vm_os_template }}"
+        full: true
+        storage: "{{ vm_storage | default('local-lvm') }}"
+        timeout: 300
+        state: present
+      register: clone_result
+
+    - name: Attendre que la configuration de la VM existe dans Proxmox
+      ansible.builtin.uri:
+        url: "https://{{ proxmox_host }}:{{ proxmox_port | default(8006) }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ vm_id | int }}/config"
+        method: GET
+        validate_certs: false
+        headers:
+          Cookie: "PVEAuthCookie={{ proxmox_auth.json.data.ticket }}"
+        status_code: [200, 404, 500]
+      register: created_vm_check
+      retries: 30
+      delay: 5
+      until: created_vm_check.status == 200
+      changed_when: false
+      no_log: true
+
+    - name: Configuration Hardware et Cloud-Init
+      community.proxmox.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_port: "{{ proxmox_port | default(8006) | int }}"
+        api_user: "{{ proxmox_user | default('root@pam') }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_id | int }}"
+        name: "{{ vm_name }}"
+        cores: "{{ vm_cores | default(2) | int }}"
+        memory: "{{ vm_memory | default(2048) | int }}"
+        ipconfig:
+          ipconfig0: "ip={{ vm_ip }}/{{ vm_netmask | default(24) }},gw={{ vm_gateway }}"
+        nameservers:
+          - "{{ vm_dns | default('8.8.8.8') }}"
+        sshkeys: "{{ ssh_public_key | default('') }}"
+        agent: enabled=1
+        update: true
+        timeout: 300
+
+    - name: Redimensionnement disque
+      community.proxmox.proxmox_disk:
+        api_host: "{{ proxmox_host }}"
+        api_port: "{{ proxmox_port | default(8006) | int }}"
+        api_user: "{{ proxmox_user | default('root@pam') }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        vmid: "{{ vm_id | int }}"
+        disk: scsi0
+        size: "{{ vm_disk_size | default('20G') }}"
+        state: resized
+
+    - name: Démarrage initial de la VM
+      community.proxmox.proxmox_kvm:
+        api_host: "{{ proxmox_host }}"
+        api_port: "{{ proxmox_port | default(8006) | int }}"
+        api_user: "{{ proxmox_user | default('root@pam') }}"
+        api_password: "{{ proxmox_password }}"
+        validate_certs: false
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_id | int }}"
+        state: started
+        timeout: 300
+
+    - name: Pause courte après premier démarrage
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Arrêt forcé via API Proxmox
+      ansible.builtin.uri:
+        url: "https://{{ proxmox_host }}:{{ proxmox_port | default(8006) }}/api2/json/nodes/{{ proxmox_node }}/qemu/{{ vm_id | int }}/status/stop"
         method: POST
         validate_certs: false
         headers:
           Cookie: "PVEAuthCookie={{ proxmox_auth.json.data.ticket }}"
           CSRFPreventionToken: "{{ proxmox_auth.json.data.CSRFPreventionToken }}"
+        status_code: [200, 500]
+      register: stop_result
       failed_when: false
+      no_log: true
 
-    - name: Pause de 5 secondes
+    - name: Pause courte après arrêt
       ansible.builtin.pause:
         seconds: 5
 
     - name: Démarrage final
-      community.general.proxmox_kvm:
+      community.proxmox.proxmox_kvm:
         api_host: "{{ proxmox_host }}"
-        api_user: "{{ proxmox_user }}"
+        api_port: "{{ proxmox_port | default(8006) | int }}"
+        api_user: "{{ proxmox_user | default('root@pam') }}"
         api_password: "{{ proxmox_password }}"
         validate_certs: false
         node: "{{ proxmox_node }}"
-        vmid: "{{ vm_id }}"
+        vmid: "{{ vm_id | int }}"
         state: started
+        timeout: 300
 
-    - name: Attente accès SSH ({{ vm_ip }})
+    - name: Attente accès SSH
       ansible.builtin.wait_for:
         host: "{{ vm_ip }}"
         port: 22
@@ -128,29 +185,27 @@
       ansible.builtin.add_host:
         name: "{{ vm_ip }}"
         groups: nouvelles_vms
-        ansible_user: ansible
+        ansible_user: "{{ vm_ansible_user | default('ansible') }}"
 
-# ---------------------------------------------------------------
-# 3. POST-CONFIGURATION (Gestion du verrou APT)
-# ---------------------------------------------------------------
 - name: Post-configuration de la VM
   hosts: nouvelles_vms
   gather_facts: true
   become: true
+
   tasks:
     - name: Attente de la libération du verrou APT
       ansible.builtin.shell: |
         while fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/lib/dpkg/lock >/dev/null 2>&1; do
-          echo "Attente de la fin d'une autre instance d'APT..."
           sleep 5
         done
+      changed_when: false
       timeout: 300
 
     - name: Mise à jour du cache APT et installation QEMU Guest Agent
       ansible.builtin.apt:
         name: qemu-guest-agent
         state: present
-        update_cache: yes
+        update_cache: true
       register: apt_status
       until: apt_status is success
       retries: 5
@@ -160,9 +215,9 @@
       ansible.builtin.systemd:
         name: qemu-guest-agent
         state: started
-        enabled: yes
+        enabled: true
 
     - name: Nettoyage final
       ansible.builtin.apt:
-        autoremove: yes
-        purge: yes
+        autoremove: true
+        purge: true
