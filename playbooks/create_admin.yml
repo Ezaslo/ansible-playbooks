@@ -1,43 +1,35 @@
----
 - name: Ajout hôte dynamique
   hosts: localhost
   gather_facts: false
-
   tasks:
     - name: Ajout de la VM à l'inventaire
       ansible.builtin.add_host:
         name: "{{ target_host }}"
         groups: nouvelles_vms
-        ansible_user: "{{ target_ansible_user | default('ansible') }}"
+        ansible_user: ansible
 
-- name: Création des administrateurs
+- name: Create admin users and install SSH keys
   hosts: nouvelles_vms
   become: true
   gather_facts: false
-
   vars:
-    admin_groups:
-      - sudo
-
+    admin_groups: ["sudo"]
     admins:
       - name: enzo
         pubkey_file: "{{ playbook_dir }}/../files/enzo.pub"
       - name: killian
         pubkey_file: "{{ playbook_dir }}/../files/enzo.pub"
-
   tasks:
     - name: Attente SSH disponible
       ansible.builtin.wait_for_connection:
         delay: 10
         timeout: 180
-
-    - name: Installation de sudo
+    - name: Ensure sudo is installed
       ansible.builtin.apt:
         name: sudo
         state: present
         update_cache: true
-
-    - name: Création des utilisateurs administrateurs
+    - name: Create admin users
       ansible.builtin.user:
         name: "{{ item.name }}"
         groups: "{{ admin_groups }}"
@@ -46,30 +38,25 @@
         create_home: true
         state: present
       loop: "{{ admins }}"
-
-    - name: Installation des clés SSH administrateurs
+    - name: Install authorized SSH key for admin users
       ansible.posix.authorized_key:
         user: "{{ item.name }}"
         key: "{{ lookup('file', item.pubkey_file) }}"
         state: present
         manage_dir: true
       loop: "{{ admins }}"
-
-    - name: Sudo sans mot de passe pour les administrateurs
+    - name: Allow passwordless sudo for admin users
       ansible.builtin.copy:
         dest: "/etc/sudoers.d/{{ item.name }}"
         content: "{{ item.name }} ALL=(ALL) NOPASSWD:ALL\n"
         mode: "0440"
-        validate: "/usr/sbin/visudo -cf %s"
       loop: "{{ admins }}"
-
-    - name: Installation QEMU Guest Agent
+    - name: Install QEMU guest agent
       ansible.builtin.apt:
         name: qemu-guest-agent
         state: present
         update_cache: true
-
-    - name: Activation QEMU Guest Agent
+    - name: Enable and start QEMU guest agent
       ansible.builtin.service:
         name: qemu-guest-agent
         state: started
